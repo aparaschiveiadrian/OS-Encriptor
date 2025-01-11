@@ -114,13 +114,62 @@ int main(int argc, char *argv[]) // MAIN
     }
     
     
+    ssize_t bytes_read_num = read(fd_in, shm_ptr, shm_size);
+    if(bytes_read_num < 0 || bytes_read_num != shm_size)
+    {
+    	perror(NULL);
+    	const char *err_msg = "File couldn't be read properly.";
+    	write(STDERR_FILENO, err_msg, strlen(err_msg));
+    	shm_unlink(shm_name);
+    	exit(1);
+    }
+    
+    close(fd_in);
+    
+    const int MAX_WORDS = 100000;
+    int *start_index_word = malloc(MAX_WORDS * sizeof(int));
+    int *length_word = malloc(MAX_WORDS * sizeof(int));
+    
+    int words_counter = 0;
+    int indx = 0;
+    
+	int start_of_word = 0;// aa     bb c     dd    
+    
+    for(int i = 0; i < shm_size; i++)
+    {
+    	char ch = shm_ptr[i];
+    	if(ch == ' ' || ch == '\t' || ch == '\n') 
+    	{
+    		if(start_of_word != 0) // has been set
+    			start_of_word = 0;
+				start_index_word[words_counter] = indx;
+				length_word[words_counter] = i - indx;
+				++words_counter;  
+    	}
+    	else
+    	{
+    		if(!start_of_word)
+    		{
+    			start_of_word = i;
+    			indx = i;
+    		}
+    	}
+    }
+    //last word
+    if(start_of_word)
+    {
+    	start_index_word[words_counter] = indx;
+    	length_word[words_counter] = shm_size - indx;
+    	++words_counter;
+    }
+    
     if(argc == 2) //case 1 : encrypt file.txt  (encryption)
     {
     	
     }   
     else if(argc == 3) //case 2 : encrypt file.txt permuations.txt (decryption)
     {
-    
+    	
     } 
     return 0;
 }
