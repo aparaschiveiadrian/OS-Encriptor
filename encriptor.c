@@ -68,7 +68,6 @@ void shuffle(int *arr, int n)
     }
     for(int i = n - 1; i > 0; i--)
     {
-    	
         int rand_index = rand() % (i + 1);
         int tmp = arr[i];
         arr[i] = arr[rand_index];
@@ -152,7 +151,7 @@ int main(int argc, char *argv[]) // MAIN
         char ch = shm_ptr[i];
         if(ch == ' ' || ch == '\t' || ch == '\n')
         {
-            if(start_of_word != 1) // has bee n set
+            if(start_of_word != -1) // has been set
             {
                 start_index_word[words_counter] = start_of_word;
                 length_word[words_counter] = i - start_of_word;
@@ -165,14 +164,14 @@ int main(int argc, char *argv[]) // MAIN
             if(start_of_word == -1)
             {
                 start_of_word = i;
-               
+                indx = i;
             }
         }
     }
     //last word
     if(start_of_word != -1)
     {
-        start_index_word[words_counter] = start_of_word;
+        start_index_word[words_counter] = indx;
         length_word[words_counter] = original_size - start_of_word;
         words_counter++;
     }
@@ -209,9 +208,9 @@ int main(int argc, char *argv[]) // MAIN
             int proc_begin = p * words_to_handle_per_proc;
             int proc_end = (p+1) * words_to_handle_per_proc;
             if(proc_end > words_counter) 
-            	proc_end = words_counter;
+                proc_end = words_counter;
             if(proc_begin >= proc_end) 
-            	break;
+                break;
 
             pid_t pid = fork();
             if(pid < 0)
@@ -232,8 +231,8 @@ int main(int argc, char *argv[]) // MAIN
 
                     memcpy(tempbuf, shm_ptr + wstart, wlen);
                     tempbuf[wlen] = '\0';
-					
-					
+
+
                     shuffle(perm, wlen);
                     for(int i=0; i<wlen; i++)
                     {
@@ -252,7 +251,7 @@ int main(int argc, char *argv[]) // MAIN
                     {
                         pos += sprintf(dst_perm + pos, "%d", perm[i]);
                         if(i<wlen-1) 
-                        	dst_perm[pos++] = ' ';
+                            dst_perm[pos++] = ' ';
                     }
                     dst_perm[pos++] = '\n';
                     dst_perm[pos]   = '\0';
@@ -295,9 +294,250 @@ int main(int argc, char *argv[]) // MAIN
         munmap(shm_ptr, total_size);
         shm_unlink(shm_name);
     }
-    else if(argc == 3)
+    else if(argc == 3) // decryption
     {
-        // dec
+        int fd_enc = open(argv[1], O_RDONLY);
+        can_open_file(fd_enc);
+
+        int fd_perm = open(argv[2], O_RDONLY);
+        can_open_file(fd_perm);
+
+        struct stat st_enc, st_perm;
+        if(fstat(fd_enc, &st_enc) < 0)
+        {
+            const char *err_msg = "Cannot get information about the encrypted file.\n";
+            write(STDERR_FILENO, err_msg, strlen(err_msg));
+            exit(1);
+        }
+        if(fstat(fd_perm, &st_perm) < 0)
+        {
+            const char *err_msg = "Cannot get information about the permutations file.\n";
+            write(STDERR_FILENO, err_msg, strlen(err_msg));
+            exit(1);
+        }
+
+        size_t enc_size = st_enc.st_size;
+        size_t perm_size = st_perm.st_size;
+        size_t total_size = enc_size + perm_size + enc_size; // original_size = enc_size
+
+        shm_fd = shm_open(shm_name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+        can_open_mem_obj(shm_fd);
+
+        if(ftruncate(shm_fd, total_size) < 0)
+        {
+            perror("ftruncate");
+            shm_unlink(shm_name);
+            exit(1);
+        }
+
+        shm_ptr = mmap(0, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+        if(shm_ptr == MAP_FAILED)
+        {
+            perror("mmap");
+            shm_unlink(shm_name);
+            exit(1);
+        }
+
+        ssize_t read_enc = read(fd_enc, shm_ptr, enc_size);
+        if(read_enc < 0 || (size_t)read_enc != enc_size)
+        {
+            perror("read encrypted.txt");
+            shm_unlink(shm_name);
+            exit(1);
+        }
+        close(fd_enc);
+
+        ssize_t read_perm = read(fd_perm, shm_ptr + enc_size, perm_size);
+        if(read_perm < 0 || (size_t)read_perm != perm_size)
+        {
+            perror("read permutations.txt");
+            shm_unlink(shm_name);
+            exit(1);
+        }
+        close(fd_perm);
+
+        //  [0 .. enc_size) = encrypted word list
+        //  [enc_size ... enc_size + perm_size) = permutations
+        //  [enc_size + perm_size ... enc_size + perm_size + enc_size) = decrypted words
+
+        char *dec_area = shm_ptr + enc_size + perm_size;
+
+        const int MAX_WORDS = 100000;
+        int *start_index_word = malloc(MAX_WORDS * sizeof(int));
+        int *length_word = malloc(MAX_WORDS * sizeof(int));
+
+        int words_counter = 0;
+        int start_of_word = -1;
+        for(int i = 0; i < enc_size; i++)
+        {
+            char ch = shm_ptr[i];
+            if(ch == ' ' || ch == '\t' || ch == '\n')
+            {
+                if(start_of_word != -1)
+                {
+                    start_index_word[words_counter] = start_of_word;
+                    length_word[words_counter] = i - start_of_word;
+                    words_counter++;
+                    start_of_word = -1;
+                }
+            }
+            else
+            {
+                if(start_of_word == -1)
+                {
+                    start_of_word = i;
+                }
+            }
+        }
+        
+        if(start_of_word != -1)
+        {
+            start_index_word[words_counter] = start_of_word;
+            length_word[words_counter] = enc_size - start_of_word;
+            words_counter++;
+        }
+
+        
+        int *perm_start = malloc(words_counter * sizeof(int));
+        int *perm_length = malloc(words_counter * sizeof(int));
+
+        int perm_words_counter = 0;
+        int perm_start_word = -1;
+        for(int i = 0; i < perm_size; i++)
+        {
+            char ch = shm_ptr[enc_size + i];
+            if(ch == '\n')
+            {
+                if(perm_start_word != -1)
+                {
+                    perm_start[perm_words_counter] = perm_start_word;
+                    perm_length[perm_words_counter] = i - perm_start_word;
+                    perm_words_counter++;
+                    perm_start_word = -1;
+                }
+            }
+            else
+            {
+                if(perm_start_word == -1)
+                {
+                    perm_start_word = i;
+                }
+            }
+        }
+        
+        if(perm_start_word != -1)
+        {
+            perm_start[perm_words_counter] = perm_start_word;
+            perm_length[perm_words_counter] = perm_size - perm_start_word;
+            perm_words_counter++;
+        }
+
+        
+        if(words_counter != perm_words_counter)
+        {
+            const char *err_msg = "Mismatch between number of encrypted words and permutations.\n";
+            write(STDERR_FILENO, err_msg, strlen(err_msg));
+            shm_unlink(shm_name);
+            exit(1);
+        }
+
+        int fd_decrypted = open("decrypted.txt", O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+        can_open_file(fd_decrypted);
+
+        int *dec_offset = calloc(words_counter, sizeof(int));
+        int total_dec = 0;
+        for(int w=0; w<words_counter; w++)
+        {
+            dec_offset[w] = total_dec;
+            total_dec += (length_word[w] + 1);
+        }
+
+        int words_to_handle_per_proc_dec = (words_counter + NUM_OF_PROC -1) / NUM_OF_PROC;
+
+        for(int p = 0; p < NUM_OF_PROC; p++)
+        {
+            int proc_begin = p * words_to_handle_per_proc_dec;
+            int proc_end   = (p+1) * words_to_handle_per_proc_dec;
+            if(proc_end > words_counter) proc_end = words_counter;
+            if(proc_begin >= proc_end) break;
+
+            pid_t pid = fork();
+            if(pid < 0)
+            {
+                perror("fork");
+                exit(1);
+            }
+            else if(pid == 0)
+            {
+                for(int w = proc_begin; w < proc_end; w++)
+                {
+                    int wstart = start_index_word[w];
+                    int wlen = length_word[w];
+
+                    char *enc_word = shm_ptr + wstart;
+
+                    
+                    char *perm_line = shm_ptr + enc_size + perm_start[w];
+                    char *perm_str = malloc(perm_length[w] + 1);
+                    strncpy(perm_str, perm_line, perm_length[w]);
+                    perm_str[perm_length[w]] = '\0';
+
+                    
+                    int *perm = malloc(wlen * sizeof(int));
+                    int idx = 0;
+                    for(int i=0; i<wlen; i++)
+                    {
+                        perm[i] = atoi(&perm_str[idx]);
+                        while(perm_str[idx] != ' ' && perm_str[idx] != '\n' && perm_str[idx] != '\0') idx++;
+                        if(perm_str[idx] == ' ') idx++;
+                        else break;
+                    }
+
+                    
+                    int *inv_perm = malloc(wlen * sizeof(int));
+                    for(int i=0; i<wlen; i++)
+                    {
+                        inv_perm[perm[i]] = i;
+                    }
+
+                    
+                    char *dec_word = dec_area + dec_offset[w];
+                    for(int i=0; i<wlen; i++)
+                    {
+                        dec_word[i] = enc_word[inv_perm[i]];
+                    }
+                    dec_word[wlen] = '\n';
+
+                    free(perm_str);
+                    free(perm);
+                    free(inv_perm);
+                }
+                _exit(0);
+            }
+        }
+
+        for(int p=0; p<NUM_OF_PROC; p++)
+        {
+            wait(NULL);
+        }
+
+        for(int w=0; w<words_counter; w++)
+        {
+            char *src_dec = dec_area + dec_offset[w];
+            int  length_dec = length_word[w] + 1;
+            write(fd_decrypted, src_dec, length_dec);
+        }
+
+        close(fd_decrypted);
+
+        free(dec_offset);
+        free(perm_start);
+        free(perm_length);
+        free(start_index_word);
+        free(length_word);
+
+        munmap(shm_ptr, total_size);
+        shm_unlink(shm_name);
     }
     return 0;
 }
